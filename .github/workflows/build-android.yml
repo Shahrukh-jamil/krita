@@ -1,0 +1,57 @@
+name: Build Krita Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'libs/ui/**'
+      - 'plugins/**'
+      - 'packaging/android/**'
+      - '.github/workflows/build-android.yml'
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    container:
+      image: invent-registry.kde.org/sysadmin/ci-images/krita-android-sdk36-2204:latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Dependencies
+        run: |
+          git clone --depth 1 https://invent.kde.org/packaging/krita-deps-management.git
+          git clone --depth 1 https://invent.kde.org/packaging/krita-ci-utilities.git krita-deps-management/ci-utilities
+          
+          python3 -m venv /tmp/venv
+          source /tmp/venv/bin/activate
+          pip install -r krita-deps-management/requirements.txt
+          
+          python3 krita-deps-management/tools/setup-env.py \
+            -v /tmp/venv \
+            --android-abi arm64-v8a \
+            --root /workspace/deps \
+            --download-only || true
+
+      - name: Build Krita for Android
+        run: |
+          export ANDROID_ABI=arm64-v8a
+          export BUILD_ROOT=/workspace/build
+          mkdir -p $BUILD_ROOT
+          
+          ./packaging/android/androidbuild.sh \
+            --src=$GITHUB_WORKSPACE \
+            --build-root=$BUILD_ROOT \
+            --build-type=Release \
+            --android-abi=$ANDROID_ABI \
+            --api-level=26 \
+            -p=krita
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: krita-android-arm64
+          path: /workspace/build/krita_build_apk/build/outputs/apk/release/*.apk
