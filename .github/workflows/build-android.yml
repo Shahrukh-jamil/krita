@@ -16,6 +16,10 @@ jobs:
       image: invent-registry.kde.org/sysadmin/ci-images/krita-android-sdk36-2204:latest
       options: --user root
 
+    defaults:
+      run:
+        shell: bash
+
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
@@ -24,43 +28,77 @@ jobs:
 
       - name: Prepare Dependencies
         run: |
+          if [ -f /var/lib/ci-files/setup-environment.sh ]; then
+            source /var/lib/ci-files/setup-environment.sh
+          fi
+
           git clone --depth 1 https://invent.kde.org/packaging/krita-deps-management.git
           git clone --depth 1 https://invent.kde.org/packaging/krita-ci-utilities.git krita-deps-management/ci-utilities
+          
           python3 -m venv /tmp/venv
-          source /tmp/venv/bin/activate
-          pip install -r krita-deps-management/requirements.txt
-          python3 krita-deps-management/tools/setup-env.py \
+          /tmp/venv/bin/pip install --upgrade pip
+          /tmp/venv/bin/pip install -r krita-deps-management/requirements.txt
+          
+          /tmp/venv/bin/python3 krita-deps-management/tools/setup-env.py \
             -v /tmp/venv \
             --android-abi arm64-v8a \
             --root /workspace/deps \
             --download-only || true
 
-      - name: Compile Krita APK
+      - name: Build and Package APK
         run: |
+          if [ -f /var/lib/ci-files/setup-environment.sh ]; then
+            source /var/lib/ci-files/setup-environment.sh
+          fi
+
           export ANDROID_ABI=arm64-v8a
           export BUILD_ROOT=/workspace/build
           mkdir -p $BUILD_ROOT
-          
-          SDK_ARG=""
-          NDK_ARG=""
-          if [ -n "$ANDROID_SDK_ROOT" ]; then
-            SDK_ARG="--sdk-path=$ANDROID_SDK_ROOT"
+
+          if [ -z "$ANDROID_SDK_ROOT" ] && [ -n "$KDECI_ANDROID_SDK_ROOT" ]; then
+            export ANDROID_SDK_ROOT="$KDECI_ANDROID_SDK_ROOT"
           fi
-          if [ -n "$ANDROID_NDK_ROOT" ]; then
-            NDK_ARG="--ndk-path=$ANDROID_NDK_ROOT"
+          if [ -z "$ANDROID_NDK_ROOT" ] && [ -n "$KDECI_ANDROID_NDK_ROOT" ]; then
+            export ANDROID_NDK_ROOT="$KDECI_ANDROID_NDK_ROOT"
           fi
-          
-          ./packaging/android/androidbuild.sh \
-            --src=$GITHUB_WORKSPACE \
-            --build-root=$BUILD_ROOT \
-            --build-type=Release \
-            --android-abi=$ANDROID_ABI \
-            --api-level=26 \
-            $SDK_ARG $NDK_ARG \
-            -p=krita
+
+          echo "Using SDK: $ANDROID_SDK_ROOT"
+          echo "Using NDK: $ANDROID_NDK_ROOT"
+
+          if [ -f ./packaging/android/androidbuild.sh ]; then
+            chmod +x ./packaging/android/androidbuild.sh
+            SDK_ARG=""
+            NDK_ARG=""
+            if [ -n "$ANDROID_SDK_ROOT" ]; then SDK_ARG="--sdk-path=$ANDROID_SDK_ROOT"; fi
+            if [ -n "$ANDROID_NDK_ROOT" ]; then NDK_ARG="--ndk-path=$ANDROID_NDK_ROOT"; fi
+
+            ./packaging/android/androidbuild.sh \
+              --src=$GITHUB_WORKSPACE \
+              --build-root=$BUILD_ROOT \
+              --build-type=Release \
+              --android-abi=$ANDROID_ABI \
+              --api-level=26 \
+              $SDK_ARG $NDK_ARG \
+              -p=krita
+          elif [ -f build-tools/ci-scripts/build-android-package.py ]; then
+            mkdir -p _build
+            cmake -B _build -S . \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DHIDE_SAFE_ASSERTS=OFF \
+              -DBUILD_TESTING=OFF \
+              -DCMAKE_INSTALL_PREFIX=/workspace/deps/usr \
+              -DCMAKE_TOOLCHAIN_FILE=krita-deps-management/tools/android-toolchain-krita.cmake \
+              -DANDROID_ENABLE_STDIO_FORWARDING=ON
+            cmake --build _build --target install -j$(nproc)
+            python3 build-tools/ci-scripts/build-android-package.py
+          fi
 
       - name: Store APK
         uses: actions/upload-artifact@v4
         with:
           name: krita-android-arm64
-          path: /workspace/build/krita_build_apk/build/outputs/apk/release/*.apk
+          path: |
+            /workspace/build/**/*.apk
+            _packaging/**/*.apk
+            **/*.apk
+          if-no-files-found: warn
